@@ -832,6 +832,9 @@ cv::Mat extract_building_mask_from_binary(const cv::Mat& segmentation_img) {
  * @brief 处理卫星数据，生成建筑三维模型（改进版，处理不同分辨率）
  */
 
+/**
+ * @brief 处理卫星数据，生成建筑三维模型（改进版，处理不同分辨率）
+ */
 bool process_building_contour_enhanced(const cv::Mat& smoothed_dsm, 
                                      const cv::Mat& tdom_img,
                                      const cv::Mat& global_normal_map,
@@ -865,11 +868,7 @@ bool process_building_contour_enhanced(const cv::Mat& smoothed_dsm,
             return false;
         }
         
-        // 4. 创建单个建筑掩码
-        cv::Mat building_mask_individual = cv::Mat::zeros(building_mask.size(), CV_8U);
-        cv::drawContours(building_mask_individual, std::vector<std::vector<cv::Point>>{contour}, 0, cv::Scalar(255), cv::FILLED);
-        
-        // 5. 获取边界框并检查
+        // 4. 获取边界框并检查
         cv::Rect bounding_rect = cv::boundingRect(contour);
         
         // 检查边界框是否有效
@@ -886,7 +885,7 @@ bool process_building_contour_enhanced(const cv::Mat& smoothed_dsm,
             return false;
         }
         
-        int padding = 5; // 减少padding以避免越界
+        int padding = 10; // 适当增加padding以确保建筑完整
         bounding_rect.x = std::max(0, bounding_rect.x - padding);
         bounding_rect.y = std::max(0, bounding_rect.y - padding);
         bounding_rect.width = std::min(smoothed_dsm.cols - bounding_rect.x, 
@@ -900,13 +899,25 @@ bool process_building_contour_enhanced(const cv::Mat& smoothed_dsm,
             return false;
         }
         
+        // 5. 创建局部建筑掩码
+        cv::Mat building_mask_individual = cv::Mat::zeros(bounding_rect.height, bounding_rect.width, CV_8U);
+        
+        // 将全局轮廓点转换为局部坐标
+        std::vector<cv::Point> local_contour;
+        for (const auto& pt : contour) {
+            local_contour.push_back(cv::Point(pt.x - bounding_rect.x, pt.y - bounding_rect.y));
+        }
+        
+        // 填充局部掩码
+        std::vector<std::vector<cv::Point>> contours_vector{local_contour};
+        cv::drawContours(building_mask_individual, contours_vector, 0, cv::Scalar(255), cv::FILLED);
+        
         // 6. 提取裁剪区域
-        cv::Mat cropped_dsm, cropped_tdom, cropped_mask, cropped_normal;
+        cv::Mat cropped_dsm, cropped_tdom, cropped_normal;
         
         try {
             cropped_dsm = smoothed_dsm(bounding_rect).clone();
             cropped_tdom = tdom_img(bounding_rect).clone();
-            cropped_mask = building_mask_individual(bounding_rect).clone();
             cropped_normal = global_normal_map(bounding_rect).clone();
         } catch (const cv::Exception& e) {
             LOG_ERROR << "Failed to crop regions for building " << contour_index << ": " << e.what();
@@ -914,16 +925,18 @@ bool process_building_contour_enhanced(const cv::Mat& smoothed_dsm,
         }
         
         // 7. 检查裁剪区域是否为空
-        if (cropped_dsm.empty() || cropped_tdom.empty() || cropped_mask.empty() || cropped_normal.empty()) {
+        if (cropped_dsm.empty() || cropped_tdom.empty() || building_mask_individual.empty() || cropped_normal.empty()) {
             LOG_WARNING << "One or more cropped regions are empty for building " << contour_index;
             return false;
         }
         
         // 8. 检查裁剪区域尺寸是否一致
-        if (cropped_dsm.size() != cropped_mask.size() ||
-            cropped_tdom.size() != cropped_mask.size() ||
-            cropped_normal.size() != cropped_mask.size()) {
+        if (cropped_dsm.size() != building_mask_individual.size() ||
+            cropped_tdom.size() != building_mask_individual.size() ||
+            cropped_normal.size() != building_mask_individual.size()) {
             LOG_WARNING << "Cropped region size mismatch for building " << contour_index;
+            LOG_WARNING << "DSM: " << cropped_dsm.size() << ", Mask: " << building_mask_individual.size()
+                       << ", TDOM: " << cropped_tdom.size() << ", Normal: " << cropped_normal.size();
             return false;
         }
         
@@ -932,15 +945,18 @@ bool process_building_contour_enhanced(const cv::Mat& smoothed_dsm,
         cv::Mat masked_tdom = cv::Mat::zeros(cropped_tdom.size(), cropped_tdom.type());
         cv::Mat masked_normal = cv::Mat::zeros(cropped_normal.size(), cropped_normal.type());
         
-        cropped_dsm.copyTo(masked_dsm, cropped_mask);
-        cropped_tdom.copyTo(masked_tdom, cropped_mask);
-        cropped_normal.copyTo(masked_normal, cropped_mask);
+        cropped_dsm.copyTo(masked_dsm, building_mask_individual);
+        cropped_tdom.copyTo(masked_tdom, building_mask_individual);
+        cropped_normal.copyTo(masked_normal, building_mask_individual);
         
         // 10. 检查掩码后数据是否有效
-        if (cv::countNonZero(cropped_mask) == 0) {
+        int building_pixel_count = cv::countNonZero(building_mask_individual);
+        if (building_pixel_count == 0) {
             LOG_WARNING << "No building pixels in mask for building " << contour_index;
             return false;
         }
+        
+        LOG_DEBUG << "Building " << contour_index << " has " << building_pixel_count << " pixels";
         
         // 11. 计算建筑高度
         std::vector<double> building_heights;
@@ -948,7 +964,7 @@ bool process_building_contour_enhanced(const cv::Mat& smoothed_dsm,
         double building_max_height = std::numeric_limits<double>::lowest();
         
         for (int y = 0; y < masked_dsm.rows; ++y) {
-            const uchar* mask_ptr = cropped_mask.ptr<uchar>(y);
+            const uchar* mask_ptr = building_mask_individual.ptr<uchar>(y);
             const double* dsm_ptr = masked_dsm.ptr<double>(y);
             
             for (int x = 0; x < masked_dsm.cols; ++x) {
@@ -995,31 +1011,34 @@ bool process_building_contour_enhanced(const cv::Mat& smoothed_dsm,
         }
         
         // 15. 创建位置图
-        cv::Mat position_map(masked_dsm.size(), CV_64FC3);
+        cv::Mat position_map(masked_dsm.size(), CV_64FC3, cv::Scalar(0.0, 0.0, 0.0));
         
         for (int y = 0; y < position_map.rows; ++y) {
             cv::Vec3d* pos_ptr = position_map.ptr<cv::Vec3d>(y);
             const double* dsm_ptr = masked_dsm.ptr<double>(y);
-            const uchar* mask_ptr = cropped_mask.ptr<uchar>(y);
+            const uchar* mask_ptr = building_mask_individual.ptr<uchar>(y);
             
             for (int x = 0; x < position_map.cols; ++x) {
-                double geo_x, geo_y;
-                int global_pixel_x = bounding_rect.x + x;
-                int global_pixel_y = bounding_rect.y + y;
-                
-                if (dsm_gt.valid) {
-                    dsm_gt.pixelToGeo(global_pixel_x, global_pixel_y, geo_x, geo_y);
-                } else {
-                    geo_x = global_pixel_x * target_resolution;
-                    geo_y = global_pixel_y * target_resolution;
-                }
-                
-                double height = building_min_height;
                 if (mask_ptr[x] > 0) {
-                    height = std::max(building_min_height, std::min(dsm_ptr[x], building_max_height));
+                    double geo_x, geo_y;
+                    int global_pixel_x = bounding_rect.x + x;
+                    int global_pixel_y = bounding_rect.y + y;
+                    
+                    if (dsm_gt.valid) {
+                        dsm_gt.pixelToGeo(global_pixel_x, global_pixel_y, geo_x, geo_y);
+                    } else {
+                        geo_x = global_pixel_x * target_resolution;
+                        geo_y = global_pixel_y * target_resolution;
+                    }
+                    
+                    double height = dsm_ptr[x];
+                    // 限制高度在合理范围内
+                    height = std::max(building_min_height, std::min(height, building_max_height));
+                    
+                    pos_ptr[x] = cv::Vec3d(geo_x, geo_y, height - building_min_height);
+                } else {
+                    pos_ptr[x] = cv::Vec3d(0.0, 0.0, 0.0);
                 }
-                
-                pos_ptr[x] = cv::Vec3d(geo_x, geo_y, height - building_min_height);
             }
         }
         
@@ -1035,7 +1054,7 @@ bool process_building_contour_enhanced(const cv::Mat& smoothed_dsm,
         LOG_INFO << "Creating building object " << building_index 
                  << " with size: " << building_mask_individual.cols << "x" << building_mask_individual.rows;
         
-        // 确保所有输入矩阵不为空
+        // 确保所有输入矩阵不为空且尺寸一致
         if (building_mask_individual.empty() || masked_tdom.empty() || 
             position_map.empty() || masked_normal.empty()) {
             LOG_ERROR << "One or more input matrices are empty for building " << contour_index;
@@ -1043,15 +1062,19 @@ bool process_building_contour_enhanced(const cv::Mat& smoothed_dsm,
         }
         
         // 检查尺寸一致性
-        if (building_mask_individual.size() != masked_tdom.size() ||
-            building_mask_individual.size() != position_map.size() ||
-            building_mask_individual.size() != masked_normal.size()) {
+        cv::Size mask_size = building_mask_individual.size();
+        if (masked_tdom.size() != mask_size ||
+            position_map.size() != mask_size ||
+            masked_normal.size() != mask_size) {
             LOG_ERROR << "Size mismatch for building " << contour_index;
+            LOG_ERROR << "Mask: " << mask_size << ", TDOM: " << masked_tdom.size()
+                     << ", Position: " << position_map.size() << ", Normal: " << masked_normal.size();
             return false;
         }
         
         // 尝试创建建筑对象
         try {
+            LOG_DEBUG << "Creating UBlock_building with name: " << building_name;
             auto building_ptr = std::make_unique<UBlock_building>(
                 building_name,
                 building_mask_individual,
@@ -1097,7 +1120,7 @@ void process_satellite_data_safe(const std::string& dsm_path,
                                 const std::string& segmentation_path,
                                 const std::string& output_dir,
                                 std::vector<std::unique_ptr<UBlock_building>>& buildings,
-                                bool use_dsine = false,
+                                bool use_dsine = true,
                                 const std::string& dsine_model_path = "",
                                 double target_resolution = 0.5,
                                 double min_building_area = 100.0) {
@@ -1185,29 +1208,44 @@ void process_satellite_data_safe(const std::string& dsm_path,
     // 9. 处理每个建筑轮廓（使用增强的安全函数）
     int building_index = 0;
     std::map<int, std::pair<cv::Rect, double>> building_info;
-    
+
+    // 先过滤掉太小的轮廓
+    std::vector<std::vector<cv::Point>> valid_contours;
     for (size_t i = 0; i < contours.size(); ++i) {
+        double area = cv::contourArea(contours[i]) * (target_resolution * target_resolution);
+        if (area >= min_building_area) {
+            valid_contours.push_back(contours[i]);
+        } else {
+            LOG_DEBUG << "Skipping small contour " << i << " with area " << area << " m²";
+        }
+    }
+
+    LOG_INFO << "Processing " << valid_contours.size() << " valid building contours";
+
+    for (size_t i = 0; i < valid_contours.size(); ++i) {
         if (building_index % 5 == 0) {
             log_memory_usage();
         }
         
         // 使用增强的函数处理每个建筑
         bool success = process_building_contour_enhanced(
-            smoothed_dsm, tdom_img, global_normal_map, building_mask,
-            dsm_gt, target_resolution, i, contours[i],
-            building_index, buildings, building_info, output_dir
+            dsm_float,  // 使用原始DSM而不是平滑后的DSM
+            tdom_img, 
+            global_normal_map, 
+            building_mask,
+            dsm_gt, 
+            target_resolution, 
+            i, 
+            valid_contours[i],
+            building_index, 
+            buildings, 
+            building_info, 
+            output_dir
         );
         
         if (!success) {
             LOG_DEBUG << "Failed to process building contour " << i;
         }
-    }
-    
-    LOG_INFO << "Successfully processed " << building_index << " buildings.";
-    
-    if (building_index == 0) {
-        LOG_ERROR << "No valid buildings found in the region.";
-        return;
     }
     
     // 10. 保存建筑索引信息
@@ -1234,48 +1272,6 @@ void process_satellite_data_safe(const std::string& dsm_path,
 /**
  * @brief 写入LOD模型
  */
-void write_lod_models(int nb_buildings, const std::string& output_dir,
-                     const std::vector<std::unique_ptr<UBlock_building>>& buildings) {
-    if (nb_buildings == 0) {
-        LOG_WARNING << "No buildings to write LOD models";
-        return;
-    }
-    
-    std::string prefix = fs::path(output_dir).stem().string();
-    
-    try {
-        // 写入LOD2模型
-        std::string lod2_file = output_dir + "/" + prefix + "_lod2.obj";
-        std::ofstream lod2_stream(lod2_file);
-        if (!lod2_stream.is_open()) {
-            LOG_ERROR << "Failed to open LOD2 file: " << lod2_file;
-        } else {
-            // 这里需要根据UBlock_building的实际接口来写入模型
-            // 假设每个建筑都有生成mesh的方法
-            for (int i = 0; i < nb_buildings; ++i) {
-                // buildings[i]->write_to_obj(lod2_stream); // 需要实现这个方法
-            }
-            LOG_INFO << "LOD2 model written: " << lod2_file;
-            lod2_stream.close();
-        }
-        
-        // 写入汇总信息
-        std::string summary_file = output_dir + "/" + prefix + "_summary.txt";
-        std::ofstream summary_stream(summary_file);
-        if (summary_stream.is_open()) {
-            summary_stream << "=== LOD Models Summary ===" << std::endl;
-            summary_stream << "Generated at: " << std::ctime(nullptr);
-            summary_stream << "Number of Buildings: " << nb_buildings << std::endl;
-            summary_stream << "Output Directory: " << output_dir << std::endl;
-            summary_stream << "LOD2 File: " << lod2_file << std::endl;
-            summary_stream.close();
-            LOG_INFO << "Summary saved to " << summary_file;
-        }
-        
-    } catch (const std::exception& e) {
-        LOG_ERROR << "Error writing LOD models: " << e.what();
-    }
-}
 
 int main(int argc, char *argv[]) {
     if (argc < 2) {
@@ -1317,13 +1313,13 @@ int main(int argc, char *argv[]) {
         // 可选参数
         double resolution = 0.5;
         double min_building_area = 100.0;
-        bool use_dsine = false;
+        bool use_dsine = true;
         std::string dsine_model_path = "";
         
         try {
             resolution = std::stod(config.get<std::string>("resolution", "0.5"));
             min_building_area = std::stod(config.get<std::string>("min_building_area", "100.0"));
-            use_dsine = config.get<std::string>("use_dsine", "false") == "true";
+            use_dsine = config.get<std::string>("use_dsine", "true") == "true";
             dsine_model_path = config.get<std::string>("dsine_model_path", "");
         } catch (...) {
             LOG_WARNING << "Using default parameters";
@@ -1387,7 +1383,10 @@ int main(int argc, char *argv[]) {
         LOG_INFO << "Building Modeling Time: " << BuildingTime << " s.";
         
         // 写入LOD模型
-        write_lod_models(nb_buildings, output_dir, buildings);
+        const std::string prefix = fs::path(output_dir).stem().string();
+        write_block_lod2(nb_buildings, output_dir + "/" + prefix);
+        write_block_lod1(nb_buildings, output_dir + "/" + prefix);
+        write_block_lod0(nb_buildings, output_dir + "/" + prefix);
         
         LOG_INFO << "=== Processing Completed ===";
         LOG_INFO << "Output directory: " << output_dir;
