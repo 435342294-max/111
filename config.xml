@@ -1,0 +1,203 @@
+<?xml version="1.0" encoding="utf-8"?>
+<prefix>pix4d_house</prefix>
+<!-- 卫星数据输入文件路径 -->
+<dsm_file>/home/hzt/Structured_Reconstruction/Data/images/Tile_+016_+028/Tile/dsm.tif</dsm_file>
+<dom_file>/home/hzt/Structured_Reconstruction/Data/images/Tile_+016_+028/Tile/dom.tif</dom_file>
+<segmentation_file>/home/hzt/Structured_Reconstruction/Data/images/Tile_+016_+028/Tile/segmentation.png</segmentation_file>
+
+<!-- 输出目录 -->
+<output_dir>/home/hzt/Structured_Reconstruction/Data/images/Tile_+016_028/res/</output_dir>
+
+<!-- 线程配置 -->
+<rec_thread_num>48</rec_thread_num> <!-- 重建的线程数目 -->
+<cal_thread_num>2</cal_thread_num> <!-- 计算的线程数目 -->
+<max_threads>8</max_threads>
+
+<!-- DSINE配置 -->
+<use_dsine>True</use_dsine> <!-- 是否使用DSINE生成法线图 -->
+<dsine_model_path>/home/hzt/Structured_Reconstruction/code_lod/DSINE-main/checkpoints/dsine.pt</dsine_model_path> <!-- DSINE模型路径，如果为空则使用默认模型 -->
+
+<!-- 卫星数据处理参数 -->
+<satellite_processing>
+  <!-- 分辨率（米/像素） -->
+  <resolution>0.5</resolution>
+  <!-- 缩放因子，用于减少内存使用 -->
+  <scale_factor>1.0</scale_factor>
+  <!-- 最小建筑面积（像素） -->
+  <min_building_area>100.0</min_building_area>
+  <!-- 建筑掩码颜色范围（RGB） -->
+  <building_mask_color>
+    <min_r>200</min_r>
+    <min_g>0</min_g>
+    <min_b>0</min_b>
+    <max_r>255</max_r>
+    <max_g>50</max_g>
+    <max_b>50</max_b>
+  </building_mask_color>
+  <!-- 法线计算窗口大小 -->
+  <normal_window_size>5</normal_window_size>
+  <!-- 是否保存中间结果 -->
+  <save_intermediate_results>True</save_intermediate_results>
+  <!-- 形态学操作内核大小 -->
+  <morph_kernel_size>5</morph_kernel_size>
+  <!-- 建筑边界框填充大小 -->
+  <bounding_box_padding>5</bounding_box_padding>
+  <!-- 平面拟合高度阈值 -->
+  <plane_fitting_height_threshold>5.0</plane_fitting_height_threshold>
+</satellite_processing>
+<scene>
+  <!-- global sampling step size -->
+  <step>0.2</step>
+</scene>
+<block>
+  <height>1029</height>
+  <width>1157</width>
+  <!-- if do not use lowest point as ground, set ground here -->
+  <!-- <ground_level>0.0</ground_level> -->
+  <!-- save / write options -->
+  <write>
+    <height_map>true</height_map>
+    <normal_map>true</normal_map>
+  </write>
+</block>
+<building>
+  <!-- min_area minimum area of a building, in square meters -->
+  <min_area>8.0</min_area>
+  <vsa>
+    <!-- random seeding average area -->
+    <seed_area>9.0</seed_area>
+    <!-- fitting iterations -->
+    <iterations>30</iterations>
+  </vsa>
+  <facade_segment>
+    <!-- minimum proxy area -->
+    <min_area>9.0</min_area>
+    <!-- facade normal cosine threshold w.r.t z axis -->
+    <normal_threshold>0.5</normal_threshold>
+  </facade_segment>
+  <image>
+    <lsd>
+      <!-- Scale image by Gaussian filter before processing. -->
+      <scale>0.8</scale>
+      <!-- Sigma for Gaussian filter is computed as sigma_scale/scale. -->
+      <sigma_scale>0.6</sigma_scale>
+      <!-- Bound to quantization error on the gradient norm. -->
+      <quant>2.0</quant>
+      <!-- Gradient angle tolerance in degrees. -->
+      <ang_th>22.5</ang_th>
+      <!--
+      Detection threshold, accept if -log10(NFA) > log_eps.
+      The larger the value, the more strict the detector is,
+      and will result in less detections.
+      (Note that the 'minus sign' makes that this
+      behavior is opposite to the one of NFA.)
+      The value -log10(NFA) is equivalent but more
+      intuitive than NFA:
+      - -1.0 gives an average of 10 false detections on noise
+      -  0.0 gives an average of 1 false detections on noise
+      -  1.0 gives an average of 0.1 false detections on nose
+      -  2.0 gives an average of 0.01 false detections on noise
+      -->
+      <log_eps>0.0</log_eps>
+      <!-- Minimal density of region points in a rectangle to be accepted. -->
+      <density_th>0.7</density_th>
+      <!-- Number of bins in 'ordering' of gradient modulus. -->
+      <n_bins>1024</n_bins>
+    </lsd>
+  </image>
+  <depth>
+    <lsd>
+      <scale>0.8</scale>
+      <sigma_scale>0.6</sigma_scale>
+      <quant>2.0</quant>
+      <ang_th>22.5</ang_th>
+      <log_eps>0.0</log_eps>
+      <density_th>0.7</density_th>
+      <n_bins>1024</n_bins>
+    </lsd>
+  </depth>
+  <normal>
+    <lsd>
+      <scale>0.5</scale>
+      <sigma_scale>0.6</sigma_scale>
+      <quant>2.0</quant>
+      <ang_th>22.5</ang_th>
+      <log_eps>0.0</log_eps>
+      <density_th>0.7</density_th>
+      <n_bins>1024</n_bins>
+    </lsd>
+  </normal>
+  <facade_direction>
+    <!-- minimum proxy area -->
+    <min_area>9.0</min_area>
+    <!-- facade normal cosine threshold w.r.t z axis -->
+    <normal_threshold>0.5</normal_threshold>
+    <!-- roof normal threshold, in degree -->
+    <vertical_tolerance>10</vertical_tolerance>
+    <ransac>
+      <!-- detect shapes with minimum area -->
+      <min_area>16.0</min_area>
+      <!-- sets maximum Euclidean distance between a point and a shape -->
+      <epsilon>0.174</epsilon>
+      <!-- sets maximum normal deviation -->
+      <normal_threshold>0.98</normal_threshold>
+      <!-- sets maximum Euclidean distance between points to be clustered -->
+      <cluster_epsilon>0.0</cluster_epsilon>
+      <!-- sets probability to miss the largest primitive at each iteration -->
+      <probability>0.05</probability>
+    </ransac>
+  </facade_direction>
+  <roof_direction>
+    <ransac>
+      <min_area>6.0</min_area>
+      <epsilon>0.174</epsilon>
+      <normal_threshold>0.98</normal_threshold>
+      <cluster_epsilon>0.0</cluster_epsilon>
+      <probability>0.05</probability>
+    </ransac>
+  </roof_direction>
+  <plane_detection>
+    <ransac>
+      <min_area>6.0</min_area>
+      <epsilon>0.15</epsilon>
+      <normal_threshold>0.98</normal_threshold>
+      <cluster_epsilon>1.0</cluster_epsilon>
+      <probability>0.05</probability>
+    </ransac>
+  </plane_detection>
+  <regularization>
+    <!-- parallel direction threshold -->
+    <parallel_threshold>15</parallel_threshold>
+    <!-- collinear distance threshold -->
+    <collinear_threshold>0.5</collinear_threshold>
+  </regularization>
+  <arr>
+    <!-- the arrangement segments extending ratio -->
+    <extend_ratio>3.0</extend_ratio>
+    <mrf>
+      <!-- use swap or expansion -->
+      <use_swap>true</use_swap>
+      <!-- smooth term balance -->
+      <balance>0.1</balance>
+      <!-- number of iterations -->
+      <iterations>40</iterations>
+    </mrf>
+  </arr>
+  <!-- save / write options -->
+  <write>
+    <color_segments>false</color_segments>
+    <height_segments>false</height_segments>
+    <normal_segments>false</normal_segments>
+    <facade_segments>false</facade_segments>
+    <all_segments>false</all_segments>
+    <regularized_segments>true</regularized_segments>
+    <arrangement>false</arrangement>
+    <arrangement_labeling>false</arrangement_labeling>
+    <local_ground>false</local_ground>
+    <levels>false</levels>
+  </write>
+  <save>
+    <mesh>false</mesh>
+    <point_cloud>false</point_cloud>
+  </save>
+</building>
