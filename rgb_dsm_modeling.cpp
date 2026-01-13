@@ -541,92 +541,86 @@ cv::Mat compute_normal_map_robust(const cv::Mat& dsm_img, int window_size = 3) {
     return normal_map;
 }
 
-/**
- * @brief 针对卫星数据优化的DSINE处理（优化版）
- * 移除坐标变换和临时文件IO，直接处理图像空间法线
- */
-cv::Mat compute_normal_map_dsine_satellite_optimized(const cv::Mat& tdom_img, 
-                                                   const std::string& model_path = "",
-                                                   const std::string& device = "cuda") {
+cv::Mat compute_normal_map_dsine_system_call(const cv::Mat& tdom_img, 
+                                           const std::string& model_path = "",
+                                           const std::string& device = "cuda") {
     try {
-        py::module sys = py::module::import("sys");
+        LOG_INFO << "Directly reading DSINE normal map from output directory...";
         
-        std::string dsine_path = "/home/hzt/Structured_Reconstruction/code_lod/DSINE-main/";
-        if (fs::exists(dsine_path)) {
-            sys.attr("path").attr("append")(dsine_path);
-        }
+        // 构建DSINE输出目录路径
+        std::string dsine_root = "/home/hzt/Structured_Reconstruction/code_lod/DSINE-main";
+        std::string dsine_projects_dsine = dsine_root + "/projects/dsine";
+        std::string samples_output_dir = dsine_projects_dsine + "/samples/output";
         
-        py::module dsine_module;
-        try {
-            dsine_module = py::module::import("dsine.inference");
-        } catch (const py::error_already_set& e) {
-            LOG_WARNING << "Cannot import dsine.inference, trying alternative import...";
-            dsine_module = py::module::import("inference");
-        }
-        
-        // 处理四通道TDOM图像
-        cv::Mat rgb_input;
-        if (tdom_img.channels() == 4) {
-            // 四通道RGBA转三通道RGB
-            cv::cvtColor(tdom_img, rgb_input, cv::COLOR_BGRA2RGB);
-        } else if (tdom_img.channels() == 3) {
-            // BGR转RGB
-            cv::cvtColor(tdom_img, rgb_input, cv::COLOR_BGR2RGB);
-        } else if (tdom_img.channels() == 1) {
-            // 灰度转RGB
-            cv::cvtColor(tdom_img, rgb_input, cv::COLOR_GRAY2RGB);
-        } else {
-            LOG_ERROR << "Unsupported number of channels: " << tdom_img.channels();
+        // 检查输出目录是否存在
+        if (!fs::exists(samples_output_dir)) {
+            LOG_ERROR << "DSINE output directory does not exist: " << samples_output_dir;
             cv::Mat default_normal(tdom_img.size(), CV_64FC3, cv::Scalar(0.0, 0.0, 1.0));
             return default_normal;
         }
         
-        // 调整图像尺寸为DSINE输入要求（384x384）
-        cv::Mat resized_input;
-        int target_size = 384;
-        cv::resize(rgb_input, resized_input, cv::Size(target_size, target_size));
+        LOG_INFO << "Looking for normal map in: " << samples_output_dir;
         
-        // 直接传递numpy数组给DSINE，避免文件IO
-        py::array img_array = py::array_t<uint8_t>(
-            {resized_input.rows, resized_input.cols, 3},
-            resized_input.data
-        );
+        // 查找输出文件（在指定的输出目录中）
+        std::string normal_output_path = "";
+        std::vector<std::string> png_files;
         
-        py::object result;
-        if (!model_path.empty()) {
-            result = dsine_module.attr("infer")(img_array, model_path, device);
-        } else {
-            result = dsine_module.attr("infer")(img_array, device);
+        // 收集所有PNG文件
+        for (const auto& entry : fs::directory_iterator(samples_output_dir)) {
+            if (entry.path().extension() == ".png") {
+                png_files.push_back(entry.path().string());
+            }
         }
         
-        py::array_t<float> normal_np = result.cast<py::array_t<float>>();
-        auto buf = normal_np.request();
+        // 如果没有PNG文件
+        if (png_files.empty()) {
+            LOG_ERROR << "No PNG files found in DSINE output directory: " << samples_output_dir;
+            cv::Mat default_normal(tdom_img.size(), CV_64FC3, cv::Scalar(0.0, 0.0, 1.0));
+            return default_normal;
+        }
         
-        int height = buf.shape[0];
-        int width = buf.shape[1];
+        // 如果有多个PNG文件，选择第一个
+        if (png_files.size() > 1) {
+            LOG_WARNING << "Multiple PNG files found in output directory. Using the first one.";
+            for (size_t i = 0; i < png_files.size(); ++i) {
+                LOG_WARNING << "  [" << i << "]: " << fs::path(png_files[i]).filename().string();
+            }
+        }
         
-        // DSINE输出的是相机坐标系下的法线图（归一化）
-        cv::Mat normal_camera(height, width, CV_32FC3, buf.ptr);
+        normal_output_path = png_files[0];
+        LOG_INFO << "Using DSINE normal map: " << normal_output_path;
         
-        // 调整到原始尺寸
+        // 读取法线图
+        cv::Mat normal_png = cv::imread(normal_output_path, cv::IMREAD_COLOR);
+        if (normal_png.empty()) {
+            LOG_ERROR << "Failed to read DSINE normal map: " << normal_output_path;
+            cv::Mat default_normal(tdom_img.size(), CV_64FC3, cv::Scalar(0.0, 0.0, 1.0));
+            return default_normal;
+        }
+        
+        LOG_INFO << "Loaded DSINE normal map: " << normal_png.cols << "x" << normal_png.rows 
+                 << ", channels: " << normal_png.channels();
+        
+        // 将PNG法线图转换为浮点法线图
+        // DSINE输出的法线图是可视化的，需要转换回[-1, 1]范围
+        cv::Mat normal_float;
+        normal_png.convertTo(normal_float, CV_64F, 1.0/127.5, -1.0); // [0, 255] -> [-1, 1]
+        
+        // 调整到原始TDOM图像的尺寸
         cv::Mat normal_resized;
-        cv::resize(normal_camera, normal_resized, rgb_input.size(), 0, 0, cv::INTER_LINEAR);
+        cv::resize(normal_float, normal_resized, tdom_img.size(), 0, 0, cv::INTER_LINEAR);
         
-        // 转换为双精度
-        cv::Mat normal_double;
-        normal_resized.convertTo(normal_double, CV_64FC3);
+        LOG_INFO << "Resized normal map to: " << normal_resized.cols << "x" << normal_resized.rows;
         
-        // 对于卫星数据，DSINE输出的法线图已经是在图像空间中的
-        // 我们只需要确保法线指向正确的方向（对于卫星数据，Z应该为正，即指向天空）
-        cv::Mat normal_world(normal_double.size(), CV_64FC3);
+        // 转换为正确的法线格式
+        cv::Mat normal_world(normal_resized.size(), CV_64FC3);
         
         #pragma omp parallel for collapse(2)
-        for (int y = 0; y < normal_double.rows; ++y) {
-            for (int x = 0; x < normal_double.cols; ++x) {
-                cv::Vec3d n_img = normal_double.at<cv::Vec3d>(y, x);
+        for (int y = 0; y < normal_resized.rows; ++y) {
+            for (int x = 0; x < normal_resized.cols; ++x) {
+                cv::Vec3d n_img = normal_resized.at<cv::Vec3d>(y, x);
                 
                 // 确保法线指向正确的方向（对于卫星数据，Z应该为正）
-                // DSINE输出的是相机坐标系，对于俯视的卫星图像，我们需要调整Z方向
                 if (n_img[2] < 0) {
                     n_img = -n_img;
                 }
@@ -643,14 +637,11 @@ cv::Mat compute_normal_map_dsine_satellite_optimized(const cv::Mat& tdom_img,
             }
         }
         
+        LOG_INFO << "DSINE normal map loaded and processed successfully";
         return normal_world;
         
-    } catch (const py::error_already_set& e) {
-        LOG_ERROR << "Python error in DSINE satellite: " << e.what();
-        cv::Mat default_normal(tdom_img.size(), CV_64FC3, cv::Scalar(0.0, 0.0, 1.0));
-        return default_normal;
     } catch (const std::exception& e) {
-        LOG_ERROR << "Error in compute_normal_map_dsine_satellite: " << e.what();
+        LOG_ERROR << "Error in compute_normal_map_dsine_system_call: " << e.what();
         cv::Mat default_normal(tdom_img.size(), CV_64FC3, cv::Scalar(0.0, 0.0, 1.0));
         return default_normal;
     }
@@ -827,10 +818,6 @@ cv::Mat extract_building_mask_from_binary(const cv::Mat& segmentation_img) {
     
     return building_mask;
 }
-
-/**
- * @brief 处理卫星数据，生成建筑三维模型（改进版，处理不同分辨率）
- */
 
 /**
  * @brief 处理卫星数据，生成建筑三维模型（改进版，处理不同分辨率）
@@ -1193,7 +1180,18 @@ void process_satellite_data_safe(const std::string& dsm_path,
     
     if (use_dsine) {
         LOG_INFO << "Using DSINE for normal map...";
-        global_normal_map = compute_normal_map_dsine_satellite_optimized(tdom_img, dsine_model_path);
+        // 使用系统调用运行DSINE
+        global_normal_map = compute_normal_map_dsine_system_call(tdom_img, dsine_model_path);
+        
+        // 如果DSINE失败，使用平面拟合作为备选
+        if (global_normal_map.empty()) {
+            LOG_WARNING << "DSINE failed, using robust plane fitting as fallback";
+            global_normal_map = compute_normal_map_robust(dsm_float, 5);
+        } else {
+            // 使用DSINE的法线图来平滑DSM
+            LOG_INFO << "Smoothing DSM with DSINE normal map...";
+            smoothed_dsm = smooth_dsm_with_normals_pixelwise(dsm_float, global_normal_map, building_mask, 3);
+        }
     } else {
         LOG_INFO << "Using robust plane fitting for normal map...";
         global_normal_map = compute_normal_map_robust(dsm_float, 5);
@@ -1229,7 +1227,7 @@ void process_satellite_data_safe(const std::string& dsm_path,
         
         // 使用增强的函数处理每个建筑
         bool success = process_building_contour_enhanced(
-            dsm_float,  // 使用原始DSM而不是平滑后的DSM
+            smoothed_dsm,  // 使用平滑后的DSM
             tdom_img, 
             global_normal_map, 
             building_mask,
@@ -1269,6 +1267,7 @@ void process_satellite_data_safe(const std::string& dsm_path,
         LOG_INFO << "Building info saved";
     }
 }
+
 /**
  * @brief 写入LOD模型
  */
@@ -1282,9 +1281,6 @@ int main(int argc, char *argv[]) {
     
     // 初始化GDAL
     GDALAllRegister();
-    
-    // 初始化Python解释器
-    py::scoped_interpreter guard{};
     
     // 启动计时器
     boost::timer::auto_cpu_timer t("%w s\n");
